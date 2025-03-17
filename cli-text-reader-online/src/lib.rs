@@ -136,10 +136,19 @@ pub async fn run_cli_text_reader(
         let result = editor.run_with_progress(move |pos| {
             let mut progress_update = progress_clone.clone();
             progress_update.position = pos;
+            
+            // Ensure position is updated in the progress struct
+            println!("Saving progress: position={}", pos);
+            
             let client = client_clone.clone();
             tokio::spawn(async move {
-                if let Err(e) = client.update_progress(&progress_update).await {
-                    eprintln!("Failed to update progress: {}", e);
+                match client.update_progress(&progress_update).await {
+                    Ok(updated) => {
+                        println!("Progress saved successfully. Position: {}", updated.position);
+                    },
+                    Err(e) => {
+                        eprintln!("Failed to update progress: {}", e);
+                    }
                 }
             });
         });

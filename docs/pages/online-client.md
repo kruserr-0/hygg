@@ -54,3 +54,5 @@ When a user opens a file, they attempt to acquire a lock for that file. If the f
 3. Reading progress will not be updated
 
 When a user closes the file, the lock is automatically released, allowing other users to acquire the lock and update progress.
+
+cd /home/user/pro/github/kruserr/hygg/cli-text-reader-online && cargo run -- read test-upload.txt --user testuser1

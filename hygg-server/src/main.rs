@@ -42,6 +42,17 @@ struct AppState {
 }
 
 async fn init_db(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    println!("Initializing database tables...");
+    
+    // Enable foreign key constraints
+    sqlx::query("
+        PRAGMA foreign_keys = ON;
+    ")
+    .execute(pool)
+    .await?;
+    
+    // Create reading_progress table if it doesn't exist
+    println!("Creating reading_progress table if needed...");
     sqlx::query("
         CREATE TABLE IF NOT EXISTS reading_progress (
             id TEXT PRIMARY KEY,
@@ -54,6 +65,8 @@ async fn init_db(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         )"
     ).execute(pool).await?;
 
+    // Create progress_events table if it doesn't exist
+    println!("Creating progress_events table if needed...");
     sqlx::query("
         CREATE TABLE IF NOT EXISTS progress_events (
             id TEXT PRIMARY KEY,
@@ -65,7 +78,8 @@ async fn init_db(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             FOREIGN KEY(progress_id) REFERENCES reading_progress(id)
         )"
     ).execute(pool).await?;
-
+    
+    println!("Database initialization completed successfully");
     Ok(())
 }
 
@@ -153,11 +167,18 @@ async fn acquire_lock(
     let now = Utc::now();
     locks.retain(|(_, _, expiry)| expiry > &now);
     
-    // Check if progress is already locked
+    // Check if progress is already locked by another user
     if let Some((_, holder, _)) = locks.iter().find(|(id, _, _)| *id == progress.id) {
-        println!("LOCK DENIED: Progress {} is already locked by {}", progress.id, holder);
-        return Err((axum::http::StatusCode::CONFLICT, 
-            format!("Progress is locked by {}", holder)));
+        // If it's the same user trying to reacquire their lock, allow it
+        if holder != &progress.user_id {
+            println!("LOCK DENIED: Progress {} is already locked by {}", progress.id, holder);
+            return Err((axum::http::StatusCode::CONFLICT, 
+                format!("Progress is locked by {}", holder)));
+        } else {
+            // Same user is reacquiring their lock - remove the old lock entry first
+            println!("LOCK REACQUIRE: User {} is reacquiring their lock for progress {}", progress.user_id, progress.id);
+            locks.retain(|(id, user, _)| !(*id == progress.id && user == &progress.user_id));
+        }
     }
     
     // Acquire new lock
@@ -225,6 +246,8 @@ async fn release_lock(
     let lock_idx = locks.iter().position(|(id, holder, _)| 
         *id == progress.id && holder == &progress.user_id
     );
+    
+    println!("LOCK CHECK: User {} is trying to release lock for progress {}. Lock index: {:?}", progress.user_id, progress.id, lock_idx);
     
     match lock_idx {
         Some(idx) => {
@@ -320,6 +343,13 @@ async fn update_progress(
         (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
     })?;
     
+    // Log detailed information about the progress update
+    println!("PROGRESS DETAIL: User {} updated position for file {} (ID: {}) to position {}", 
+        progress.user_id, 
+        progress.file_path,
+        progress.id,
+        progress.position);
+    
     println!("PROGRESS UPDATED: User {} successfully updated position to {}", progress.user_id, progress.position);
     Ok(Json(progress))
 }
@@ -386,11 +416,64 @@ async fn get_progress(
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
     
-    let db = SqlitePoolOptions::new()
-        .max_connections(10)
-        .connect("data/hygg.db")
-        .await?
-    ;
+    // Ensure the database directory exists with proper permissions
+    let db_path = std::path::Path::new("data");
+    if !db_path.exists() {
+        println!("Creating database directory: {:?}", db_path);
+        std::fs::create_dir_all(db_path)?;
+        
+        // On Unix-like systems, ensure proper permissions (this is a no-op on Windows)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let metadata = std::fs::metadata(db_path)?;
+            let mut perms = metadata.permissions();
+            perms.set_mode(0o755); // rwxr-xr-x permissions
+            std::fs::set_permissions(db_path, perms)?;
+        }
+    }
+    
+    // Check if the test-data directory exists too and create it if needed
+    let test_data_path = std::path::Path::new("test-data");
+    if !test_data_path.exists() {
+        println!("Creating test data directory: {:?}", test_data_path);
+        std::fs::create_dir_all(test_data_path)?;
+    }
+    
+    // Database file path (use absolute path for better reliability)
+    let current_dir = std::env::current_dir()?;
+    let db_path = current_dir.join("data/hygg.db");
+    let db_file = db_path.to_str().unwrap_or("data/hygg.db");
+    println!("Using database at: {}", db_file);
+    
+    // Touch the database file to make sure it exists before trying to connect
+    if !std::path::Path::new(db_file).exists() {
+        println!("Creating empty database file");
+        std::fs::File::create(db_file)?;
+    }
+    
+    // Connect to the database with retry logic in case of temporary failures
+    let mut retry_count = 0;
+    let max_retries = 3;
+    let db = loop {
+        match SqlitePoolOptions::new()
+            .max_connections(10)
+            .connect(db_file)
+            .await
+        {
+            Ok(pool) => {
+                println!("Successfully connected to database");
+                break pool;
+            },
+            Err(e) if retry_count < max_retries => {
+                retry_count += 1;
+                eprintln!("Database connection attempt {} failed: {}", retry_count, e);
+                println!("Retrying connection in 1 second...");
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            },
+            Err(e) => return Err(e.into()),
+        }
+    };
     
     init_db(&db).await?;
     

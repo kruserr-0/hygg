@@ -1,3 +1,4 @@
+use crate::progress::undo_last_highlight;
 use crossterm::{
   cursor::{Hide, MoveTo, Show},
   event::{self, Event as CEvent, KeyCode},
@@ -8,7 +9,9 @@ use crossterm::{
 use std::io::{self, IsTerminal, Write};
 
 use crate::config::load_config;
-use crate::progress::{generate_hash, load_progress, save_progress};
+use crate::progress::{generate_hash, load_progress, save_progress, 
+                      load_highlights, add_highlight, remove_highlight, 
+                      clear_highlights, export_highlights};
 use crate::tutorial::get_tutorial_text;
 
 #[derive(PartialEq)]
@@ -17,6 +20,7 @@ pub enum EditorMode {
   Command,
   Search,
   ReverseSearch,
+  Visual,
 }
 
 pub struct EditorState {
@@ -26,6 +30,8 @@ pub struct EditorState {
   pub search_direction: bool, // true for forward, false for backward
   pub last_search_index: Option<usize>,
   pub current_match: Option<(usize, usize, usize)>, // (line_index, start, end)
+  pub visual_start: Option<usize>, // Starting line for visual mode selection
+  pub visual_end: Option<usize>,   // Ending line for visual mode selection
 }
 
 impl EditorState {
@@ -37,6 +43,8 @@ impl EditorState {
       search_direction: true,
       last_search_index: None,
       current_match: None,
+      visual_start: None,
+      visual_end: None,
     }
   }
 }
@@ -49,6 +57,7 @@ pub struct Editor {
     height: usize,
     show_highlighter: bool,
     editor_state: EditorState,
+    highlights: Vec<usize>, // Store highlighted line numbers
     document_hash: u64,
     total_lines: usize,
     progress_display_until: Option<std::time::Instant>,
@@ -64,6 +73,9 @@ impl Editor {
         let (width, height) = terminal::size()
             .map(|(w, h)| (w as usize, h as usize))
             .unwrap_or((80, 24));
+            
+        // Try to load highlights
+        let highlights = load_highlights(document_hash).unwrap_or_default();
 
         Self {
             lines,
@@ -79,6 +91,7 @@ impl Editor {
             show_progress: false,
             progress_callback: None,
             read_only: false,
+            highlights,
         }
   }
 
@@ -242,9 +255,65 @@ impl Editor {
         self.lines.iter().skip(self.offset).take(self.height).enumerate()
       {
         let line = line_orig.clone();
+        let absolute_line_number = self.offset + i;
         execute!(stdout, MoveTo(0, i as u16))?;
+        
+        // First, always clear the background for this line to avoid any color bleeding
+        execute!(stdout, ResetColor)?;
+        
+        // Check if line is in visual selection - only if we're actually in Visual mode
+        let is_visual_selected = if self.editor_state.mode == EditorMode::Visual {
+          if let (Some(start), Some(end)) = (self.editor_state.visual_start, self.editor_state.visual_end) {
+            let (min, max) = if start <= end { (start, end) } else { (end, start) };
+            absolute_line_number >= min && absolute_line_number <= max
+          } else {
+            false
+          }
+        } else {
+          false
+        };
+        
+        // Check if this is a highlighted line
+        let is_highlighted = self.highlights.contains(&absolute_line_number);
 
-        if self.show_highlighter && i == self.height / 2 {
+        // Apply visual selection highlight
+        if self.editor_state.mode == EditorMode::Visual && is_visual_selected {
+          // Clear line first to ensure clean rendering
+          execute!(stdout, SetBackgroundColor(Color::Reset))?;
+          print!("{}", " ".repeat(term_width as usize));
+          execute!(stdout, MoveTo(0, i as u16))?;
+          
+          // Now apply the visual selection highlight
+          execute!(
+            stdout,
+            SetBackgroundColor(Color::Rgb { r: 50, g: 50, b: 100 })
+          )?;
+          print!("{}", " ".repeat(term_width as usize));
+          execute!(stdout, MoveTo(0, i as u16))?;
+        }
+        // Apply permanent highlight (yellow background)
+        else if is_highlighted {
+          // Clear line first to ensure clean rendering
+          execute!(stdout, SetBackgroundColor(Color::Reset))?;
+          print!("{}", " ".repeat(term_width as usize));
+          execute!(stdout, MoveTo(0, i as u16))?;
+          
+          // Now apply the highlight
+          execute!(
+            stdout,
+            SetBackgroundColor(Color::Rgb { r: 100, g: 100, b: 0 })
+          )?;
+          print!("{}", " ".repeat(term_width as usize));
+          execute!(stdout, MoveTo(0, i as u16))?;
+        }
+        // Current line indicator
+        else if self.show_highlighter && i == self.height / 2 {
+          // Clear line first to ensure clean rendering
+          execute!(stdout, SetBackgroundColor(Color::Reset))?;
+          print!("{}", " ".repeat(term_width as usize));
+          execute!(stdout, MoveTo(0, i as u16))?;
+          
+          // Now apply the current line highlight
           execute!(
             stdout,
             SetBackgroundColor(Color::Rgb { r: 40, g: 40, b: 40 })
@@ -271,10 +340,10 @@ impl Editor {
         }
 
         println!("{}{}", center_offset_string, line);
-
-        if self.show_highlighter && i == self.height / 2 {
-          execute!(stdout, SetBackgroundColor(Color::Reset))?;
-        }
+        
+        // Always reset ALL colors (foreground and background) after printing each line
+        // This is critical to prevent color bleeding when scrolling
+        execute!(stdout, ResetColor)?;
       }
 
       if self.editor_state.mode == EditorMode::Command {
@@ -286,8 +355,24 @@ impl Editor {
       } else if self.editor_state.mode == EditorMode::ReverseSearch {
         execute!(stdout, MoveTo(0, (self.height - 1) as u16))?;
         print!("?{}", self.editor_state.command_buffer);
+      } else if self.editor_state.mode == EditorMode::Visual {
+        // Show visual mode status with selection info
+        execute!(stdout, MoveTo(0, (self.height - 1) as u16))?;
+        if let (Some(start), Some(end)) = (self.editor_state.visual_start, self.editor_state.visual_end) {
+          let (min, max) = if start <= end { (start, end) } else { (end, start) };
+          let line_count = max - min + 1;
+          print!("-- VISUAL LINE -- {} line{} selected", line_count, if line_count == 1 { "" } else { "s" });
+        } else {
+          print!("-- VISUAL LINE --");
+        }
       }
 
+      // Show highlight count in normal mode
+      if self.editor_state.mode == EditorMode::Normal && !self.highlights.is_empty() {
+        execute!(stdout, MoveTo(0, (self.height - 2) as u16))?;
+        print!("Highlights: {} lines | Press V for Visual mode, :hl to highlight, :rm-hl to remove, :export-hl to export", self.highlights.len());
+      }
+      
       // Show progress if enabled
       if self.show_progress {
         let progress =
@@ -328,6 +413,14 @@ impl Editor {
                 self.editor_state.mode = EditorMode::ReverseSearch;
                 self.editor_state.command_buffer.clear();
                 self.editor_state.search_direction = false;
+              }
+              KeyCode::Char('V') => {
+                // Enter Visual Line mode (like Vim's SHIFT+V)
+                self.editor_state.mode = EditorMode::Visual;
+                // Start selection at current line
+                let current_line = self.offset + self.height / 2;
+                self.editor_state.visual_start = Some(current_line);
+                self.editor_state.visual_end = Some(current_line);
               }
               KeyCode::Char('n') => {
                 if !self.editor_state.search_query.is_empty() {
@@ -421,10 +514,52 @@ impl Editor {
                 _ => {}
               }
             }
+            EditorMode::Visual => match key_event.code {
+              KeyCode::Esc => {
+                // Exit Visual mode
+                self.editor_state.mode = EditorMode::Normal;
+                self.editor_state.visual_start = None;
+                self.editor_state.visual_end = None;
+              }
+              KeyCode::Char(':') => {
+                // Enter command mode from visual mode
+                self.editor_state.mode = EditorMode::Command;
+                self.editor_state.command_buffer.clear();
+              }
+              KeyCode::Char('j') | KeyCode::Down => {
+                // Move visual selection down
+                if let Some(end) = self.editor_state.visual_end {
+                  if end < self.total_lines - 1 {
+                    self.editor_state.visual_end = Some(end + 1);
+                    
+                    // Ensure the selection is visible
+                    if end + 1 >= self.offset + self.height {
+                      self.offset += 1;
+                    }
+                  }
+                }
+              }
+              KeyCode::Char('k') | KeyCode::Up => {
+                // Move visual selection up
+                if let Some(end) = self.editor_state.visual_end {
+                  if end > 0 {
+                    self.editor_state.visual_end = Some(end - 1);
+                    
+                    // Ensure the selection is visible
+                    if end - 1 < self.offset {
+                      self.offset -= 1;
+                    }
+                  }
+                }
+              }
+              _ => {}
+            },
             EditorMode::Command => match key_event.code {
               KeyCode::Esc => {
                 self.editor_state.mode = EditorMode::Normal;
                 self.editor_state.command_buffer.clear();
+                self.editor_state.visual_start = None;
+                self.editor_state.visual_end = None;
               }
               KeyCode::Enter => {
                 if self.execute_command(stdout)? {
@@ -432,6 +567,8 @@ impl Editor {
                 }
                 self.editor_state.mode = EditorMode::Normal;
                 self.editor_state.command_buffer.clear();
+                self.editor_state.visual_start = None;
+                self.editor_state.visual_end = None;
               }
               KeyCode::Backspace => {
                 self.editor_state.command_buffer.pop();
@@ -471,6 +608,128 @@ impl Editor {
       }
       "help" | "tutorial" => {
         self.show_tutorial(stdout)?;
+        self.editor_state.mode = EditorMode::Normal;
+        self.editor_state.command_buffer.clear();
+        Ok(false)
+      }
+      "hl" => {
+        // Highlight the selected line(s) in visual mode
+        if let (Some(start), Some(end)) = (self.editor_state.visual_start, self.editor_state.visual_end) {
+          let (min, max) = if start <= end { (start, end) } else { (end, start) };
+          
+          // Add highlights for all lines in the selection
+          for line_num in min..=max {
+            // Check if the line is already highlighted
+            if !self.highlights.contains(&line_num) {
+              // Add to the local highlights list
+              self.highlights.push(line_num);
+              // Save to event sourcing database
+              add_highlight(self.document_hash, line_num)?;
+            }
+          }
+          
+          println!("Added highlights to {} line(s)", max - min + 1);
+        } else {
+          // Highlight current line if not in visual mode
+          let current_line = self.offset + self.height / 2;
+          if !self.highlights.contains(&current_line) {
+            self.highlights.push(current_line);
+            add_highlight(self.document_hash, current_line)?;
+          }
+        }
+        
+        self.editor_state.mode = EditorMode::Normal;
+        self.editor_state.visual_start = None;
+        self.editor_state.visual_end = None;
+        self.editor_state.command_buffer.clear();
+        Ok(false)
+      }
+      "rm-hl" => {
+        // Remove highlights from selected lines
+        if let (Some(start), Some(end)) = (self.editor_state.visual_start, self.editor_state.visual_end) {
+          let (min, max) = if start <= end { (start, end) } else { (end, start) };
+          
+          // Remove highlights for all lines in the selection
+          for line_num in min..=max {
+            if self.highlights.contains(&line_num) {
+              // Remove from local highlights
+              self.highlights.retain(|&l| l != line_num);
+              // Save to event sourcing database
+              remove_highlight(self.document_hash, line_num)?;
+            }
+          }
+        } else {
+          // Remove highlight from current line if not in visual mode
+          let current_line = self.offset + self.height / 2;
+          if self.highlights.contains(&current_line) {
+            self.highlights.retain(|&l| l != current_line);
+            remove_highlight(self.document_hash, current_line)?;
+          }
+        }
+        
+        self.editor_state.mode = EditorMode::Normal;
+        self.editor_state.visual_start = None;
+        self.editor_state.visual_end = None;
+        self.editor_state.command_buffer.clear();
+        Ok(false)
+      }
+      "clear-hl" => {
+        // Clear all highlights
+        self.highlights.clear();
+        clear_highlights(self.document_hash)?;
+        
+        self.editor_state.mode = EditorMode::Normal;
+        self.editor_state.visual_start = None;
+        self.editor_state.visual_end = None;
+        self.editor_state.command_buffer.clear();
+        Ok(false)
+      }
+      "export-hl" => {
+        // Export all highlights to a file
+        let highlights_text = export_highlights(self.document_hash, &self.lines)?;
+        
+        // Create highlights directory if it doesn't exist
+        let mut highlights_dir = dirs::home_dir().unwrap_or_default();
+        highlights_dir.push(".hygg");
+        highlights_dir.push("highlights");
+        std::fs::create_dir_all(&highlights_dir)?;
+        
+        // Generate filename based on document hash
+        let filename = format!("{}.txt", self.document_hash);
+        highlights_dir.push(filename);
+        
+        // Write to file
+        std::fs::write(&highlights_dir, highlights_text)?;
+        
+        // Show confirmation message
+        execute!(stdout, MoveTo(0, (self.height - 2) as u16), SetForegroundColor(Color::Green))?;
+        print!("Highlights exported to: {}", highlights_dir.display());
+        execute!(stdout, ResetColor)?;
+        
+        self.editor_state.mode = EditorMode::Normal;
+        self.editor_state.command_buffer.clear();
+        Ok(false)
+      }
+      "hlu" => {
+        // Undo the last highlight action
+        match undo_last_highlight(self.document_hash)? {
+          true => {
+            // Reload highlights after the undo
+            self.highlights = load_highlights(self.document_hash)?;
+            
+            // Show confirmation message
+            execute!(stdout, MoveTo(0, (self.height - 2) as u16), SetForegroundColor(Color::Green))?;
+            print!("Last highlight action undone");
+            execute!(stdout, ResetColor)?;
+          },
+          false => {
+            // Show message that there was nothing to undo
+            execute!(stdout, MoveTo(0, (self.height - 2) as u16), SetForegroundColor(Color::Yellow))?;
+            print!("No highlight actions to undo");
+            execute!(stdout, ResetColor)?;
+          }
+        }
+        
         self.editor_state.mode = EditorMode::Normal;
         self.editor_state.command_buffer.clear();
         Ok(false)
