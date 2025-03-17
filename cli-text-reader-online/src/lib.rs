@@ -13,6 +13,34 @@ use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::fs::read_to_string;
+use log::{info, warn, error, debug, trace, LevelFilter};
+use std::fs::OpenOptions;
+
+/// Initialize logging to both console and a file
+pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
+    // Create log directory if it doesn't exist
+    let home_dir = dirs::home_dir().ok_or("Could not get home directory")?;
+    let log_dir = home_dir.join(".hygg").join("logs");
+    std::fs::create_dir_all(&log_dir)?;
+    
+    // Setup logging to file
+    let log_file_path = log_dir.join("hygg_app.log");
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_file_path)?;
+    
+    // Initialize env_logger and set file writer
+    env_logger::builder()
+        .filter_level(LevelFilter::Debug)
+        .format_timestamp_secs()
+        .write_style(env_logger::WriteStyle::Always)
+        .target(env_logger::Target::Pipe(Box::new(file)))
+        .init();
+    
+    info!("Logging initialized");
+    Ok(())
+}
 
 /// Upload a local file to the server for syncing
 /// 

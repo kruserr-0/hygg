@@ -11,6 +11,10 @@ pub fn print_help_menu(args: Vec<String>, opts: getopts::Options) {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize logging
+    cli_text_reader_online::init_logging()?;
+    log::info!("CLI Text Reader started");
+    
     let args: Vec<String> = env::args().collect();
     let mut opts = getopts::Options::new();
 

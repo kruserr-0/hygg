@@ -161,6 +161,17 @@ pub async fn add_highlight_async(
 
 /// Helper function to handle local highlight addition
 fn handle_local_add_highlight(document_hash: u64, line_number: usize) -> Result<(), Box<dyn std::error::Error>> {
+  // First check if this line is already highlighted by loading existing highlights
+  let highlights = handle_local_load_highlights(document_hash)?;
+  
+  // Check if line is already highlighted
+  if highlights.contains(&line_number) {
+    log::info!("Line {} is already highlighted for document {}, skipping", line_number, document_hash);
+    return Ok(());
+  }
+
+  log::info!("Adding highlight for line {} in document {}", line_number, document_hash);
+  
   let event = Event::AddHighlight {
     timestamp: Utc::now(),
     document_hash,
@@ -172,6 +183,7 @@ fn handle_local_add_highlight(document_hash: u64, line_number: usize) -> Result<
     OpenOptions::new().create(true).append(true).open(progress_file_path)?;
   file.write_all(serialized.as_bytes())?;
   file.write_all(b"\n")?;
+  log::debug!("Highlight added successfully for line {} in document {}", line_number, document_hash);
   Ok(())
 }
 
@@ -218,6 +230,17 @@ pub async fn remove_highlight_async(
 
 /// Helper function to handle local highlight removal
 fn handle_local_remove_highlight(document_hash: u64, line_number: usize) -> Result<(), Box<dyn std::error::Error>> {
+  // First check if this line is currently highlighted
+  let highlights = handle_local_load_highlights(document_hash)?;
+  
+  // Check if line is already highlighted
+  if !highlights.contains(&line_number) {
+    log::info!("Line {} is not highlighted for document {}, skipping removal", line_number, document_hash);
+    return Ok(());
+  }
+
+  log::info!("Removing highlight for line {} in document {}", line_number, document_hash);
+  
   let event = Event::RemoveHighlight {
     timestamp: Utc::now(),
     document_hash,
@@ -229,6 +252,7 @@ fn handle_local_remove_highlight(document_hash: u64, line_number: usize) -> Resu
     OpenOptions::new().create(true).append(true).open(progress_file_path)?;
   file.write_all(serialized.as_bytes())?;
   file.write_all(b"\n")?;
+  log::debug!("Highlight removed successfully for line {} in document {}", line_number, document_hash);
   Ok(())
 }
 
