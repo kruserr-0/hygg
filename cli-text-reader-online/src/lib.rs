@@ -129,7 +129,7 @@ pub async fn run_cli_text_reader(
     let result = if read_only_mode {
         editor.set_read_only(true);
         // Run editor without progress updates
-        editor.run()
+        editor.run().await
     } else {
         // Run editor with progress tracking
         let client_clone = client.clone();
@@ -154,7 +154,7 @@ pub async fn run_cli_text_reader(
             });
         });
 
-        result
+        result.await
     };
     
     // Release lock if we had one (not read-only mode)

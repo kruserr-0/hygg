@@ -119,127 +119,221 @@ pub fn load_progress(
 }
 
 /// Add a highlight for a specific line in a document
+/// 
+/// This function handles both local and server-side highlights.
+/// For server-side highlights, you should use the `add_highlight_async` function instead.
 pub fn add_highlight(
   document_hash: u64,
   line_number: usize,
   file_path: &str,
   client: Option<Arc<HyggClient>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+  // For server-side highlights, notify the user to use the async version
+  if client.is_some() {
+    println!("Error: Cannot call add_highlight with client from a synchronous context");
+    println!("Use add_highlight_async instead");
+    return Err("Cannot use server-side highlights from a synchronous context. Use add_highlight_async instead".into());
+  }
+
+  // Fallback to local storage for offline mode
+  handle_local_add_highlight(document_hash, line_number)
+}
+
+/// Async version of add_highlight for server-side highlights
+pub async fn add_highlight_async(
+  document_hash: u64,
+  line_number: usize,
+  file_path: &str,
+  client: Option<Arc<HyggClient>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+  println!("add_highlight_async called for document_hash={}, line={}", document_hash, line_number);
+  
   // If we have a client, use the server API
   if let Some(client) = client {
-    // Create a runtime for async operations
-    let rt = Runtime::new()?;
-    rt.block_on(async {
-      println!("Adding highlight for line {} via server API", line_number);
-      client.add_highlight(file_path, &document_hash.to_string(), line_number).await?;
-      Ok(())
-    })
-  } else {
-    // Fallback to local storage for offline mode
-    let event = Event::AddHighlight {
-      timestamp: Utc::now(),
-      document_hash,
-      line_number,
-    };
-    let serialized = serde_json::to_string(&event)?;
-    let progress_file_path = get_progress_file_path()?;
-    let mut file =
-      OpenOptions::new().create(true).append(true).open(progress_file_path)?;
-    file.write_all(serialized.as_bytes())?;
-    file.write_all(b"\n")?;
-    Ok(())
+    println!("Adding highlight for line {} via server API", line_number);
+    client.add_highlight(file_path, &document_hash.to_string(), line_number).await?;
+    return Ok(());
   }
+  
+  // Fallback to local storage for offline mode
+  handle_local_add_highlight(document_hash, line_number)
+}
+
+/// Helper function to handle local highlight addition
+fn handle_local_add_highlight(document_hash: u64, line_number: usize) -> Result<(), Box<dyn std::error::Error>> {
+  let event = Event::AddHighlight {
+    timestamp: Utc::now(),
+    document_hash,
+    line_number,
+  };
+  let serialized = serde_json::to_string(&event)?;
+  let progress_file_path = get_progress_file_path()?;
+  let mut file =
+    OpenOptions::new().create(true).append(true).open(progress_file_path)?;
+  file.write_all(serialized.as_bytes())?;
+  file.write_all(b"\n")?;
+  Ok(())
 }
 
 /// Remove a highlight for a specific line in a document
+/// 
+/// This function handles both local and server-side highlights.
+/// For server-side highlights, you should use the `remove_highlight_async` function instead.
 pub fn remove_highlight(
   document_hash: u64,
   line_number: usize,
   file_path: &str,
   client: Option<Arc<HyggClient>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+  // For server-side highlights, notify the user to use the async version
+  if client.is_some() {
+    println!("Error: Cannot call remove_highlight with client from a synchronous context");
+    println!("Use remove_highlight_async instead");
+    return Err("Cannot use server-side highlights from a synchronous context. Use remove_highlight_async instead".into());
+  }
+
+  // Fallback to local storage for offline mode
+  handle_local_remove_highlight(document_hash, line_number)
+}
+
+/// Async version of remove_highlight for server-side highlights
+pub async fn remove_highlight_async(
+  document_hash: u64,
+  line_number: usize,
+  file_path: &str,
+  client: Option<Arc<HyggClient>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+  println!("remove_highlight_async called for document_hash={}, line={}", document_hash, line_number);
+  
   // If we have a client, use the server API
   if let Some(client) = client {
-    // Create a runtime for async operations
-    let rt = Runtime::new()?;
-    rt.block_on(async {
-      println!("Removing highlight for line {} via server API", line_number);
-      client.remove_highlight(file_path, &document_hash.to_string(), line_number).await?;
-      Ok(())
-    })
-  } else {
-    // Fallback to local storage for offline mode
-    let event = Event::RemoveHighlight {
-      timestamp: Utc::now(),
-      document_hash,
-      line_number,
-    };
-    let serialized = serde_json::to_string(&event)?;
-    let progress_file_path = get_progress_file_path()?;
-    let mut file =
-      OpenOptions::new().create(true).append(true).open(progress_file_path)?;
-    file.write_all(serialized.as_bytes())?;
-    file.write_all(b"\n")?;
-    Ok(())
+    println!("Removing highlight for line {} via server API", line_number);
+    client.remove_highlight(file_path, &document_hash.to_string(), line_number).await?;
+    return Ok(());
   }
+  
+  // Fallback to local storage for offline mode
+  handle_local_remove_highlight(document_hash, line_number)
+}
+
+/// Helper function to handle local highlight removal
+fn handle_local_remove_highlight(document_hash: u64, line_number: usize) -> Result<(), Box<dyn std::error::Error>> {
+  let event = Event::RemoveHighlight {
+    timestamp: Utc::now(),
+    document_hash,
+    line_number,
+  };
+  let serialized = serde_json::to_string(&event)?;
+  let progress_file_path = get_progress_file_path()?;
+  let mut file =
+    OpenOptions::new().create(true).append(true).open(progress_file_path)?;
+  file.write_all(serialized.as_bytes())?;
+  file.write_all(b"\n")?;
+  Ok(())
 }
 
 /// Clear all highlights for a document
+/// 
+/// This function handles both local and server-side highlights.
+/// For server-side highlights, you should use the `clear_highlights_async` function instead.
 pub fn clear_highlights(
   document_hash: u64,
   client: Option<Arc<HyggClient>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+  // For server-side highlights, notify the user to use the async version
+  if client.is_some() {
+    println!("Error: Cannot call clear_highlights with client from a synchronous context");
+    println!("Use clear_highlights_async instead");
+    return Err("Cannot use server-side highlights from a synchronous context. Use clear_highlights_async instead".into());
+  }
+
+  // Fallback to local storage for offline mode
+  handle_local_clear_highlights(document_hash)
+}
+
+/// Async version of clear_highlights for server-side highlights
+pub async fn clear_highlights_async(
+  document_hash: u64,
+  client: Option<Arc<HyggClient>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+  println!("clear_highlights_async called for document_hash={}", document_hash);
+  
   // If we have a client, use the server API
   if let Some(client) = client {
-    // Create a runtime for async operations
-    let rt = Runtime::new()?;
-    rt.block_on(async {
-      println!("Clearing all highlights via server API");
-      client.clear_highlights(&document_hash.to_string()).await?;
-      Ok(())
-    })
-  } else {
-    // Fallback to local storage for offline mode
-    let event = Event::ClearHighlights {
-      timestamp: Utc::now(),
-      document_hash,
-    };
-    let serialized = serde_json::to_string(&event)?;
-    let progress_file_path = get_progress_file_path()?;
-    let mut file =
-      OpenOptions::new().create(true).append(true).open(progress_file_path)?;
-    file.write_all(serialized.as_bytes())?;
-    file.write_all(b"\n")?;
-    Ok(())
+    println!("Clearing all highlights via server API");
+    client.clear_highlights(&document_hash.to_string()).await?;
+    return Ok(());
   }
+  
+  // Fallback to local storage for offline mode
+  handle_local_clear_highlights(document_hash)
+}
+
+/// Helper function to handle local highlight clearing
+fn handle_local_clear_highlights(document_hash: u64) -> Result<(), Box<dyn std::error::Error>> {
+  let event = Event::ClearHighlights {
+    timestamp: Utc::now(),
+    document_hash,
+  };
+  let serialized = serde_json::to_string(&event)?;
+  let progress_file_path = get_progress_file_path()?;
+  let mut file =
+    OpenOptions::new().create(true).append(true).open(progress_file_path)?;
+  file.write_all(serialized.as_bytes())?;
+  file.write_all(b"\n")?;
+  Ok(())
 }
 
 /// Load all highlighted lines for a document
+/// 
+/// This function handles both local and server-side highlights.
+/// For server-side highlights, you should call this in an async context
+/// or use the `load_highlights_async` function instead.
 pub fn load_highlights(
   document_hash: u64,
   client: Option<Arc<HyggClient>>,
 ) -> Result<Vec<usize>, Box<dyn std::error::Error>> {
   println!("Loading highlights for document hash: {}", document_hash);
   
-  // If we have a client, use the server API
-  if let Some(client) = client {
-    // Create a runtime for async operations
-    let rt = Runtime::new()?;
-    let highlights = rt.block_on(async {
-      println!("Loading highlights via server API");
-      let server_highlights = client.get_highlights(&document_hash.to_string()).await?;
-      
-      // Extract just the line numbers
-      let line_numbers: Vec<usize> = server_highlights.iter()
-        .map(|h| h.line_number)
-        .collect();
-      
-      println!("Received {} highlights from server", line_numbers.len());
-      Ok::<Vec<usize>, Box<dyn std::error::Error>>(line_numbers)
-    })?;
-    
-    return Ok(highlights);
+  // For server-side highlights, delegate to the async version
+  if client.is_some() {
+    println!("Error: Cannot call load_highlights with client from a synchronous context");
+    println!("Either call this function in an async context or use load_highlights_async instead");
+    return Err("Cannot use server-side highlights from a synchronous context. Use load_highlights_async instead".into());
   }
+  
+  // Handle local storage fallback
+  println!("Using local storage for highlight loading");
+  handle_local_load_highlights(document_hash)
+}
+
+/// Async version of load_highlights for server-side highlights
+pub async fn load_highlights_async(
+  document_hash: u64,
+  client: Option<Arc<HyggClient>>,
+) -> Result<Vec<usize>, Box<dyn std::error::Error>> {
+  println!("load_highlights_async called with document_hash={}", document_hash);
+  
+  if let Some(client) = client {
+    println!("Loading highlights via server API");
+    let server_highlights = client.get_highlights(&document_hash.to_string()).await?;
+    
+    // Extract just the line numbers
+    let line_numbers: Vec<usize> = server_highlights.iter()
+      .map(|h| h.line_number)
+      .collect();
+    
+    println!("Received {} highlights from server", line_numbers.len());
+    return Ok(line_numbers);
+  }
+  
+  // Handle local storage fallback
+  println!("Using local storage for highlight loading");
+  handle_local_load_highlights(document_hash)
+}
+
+/// Helper function to handle local highlight loading logic
+fn handle_local_load_highlights(document_hash: u64) -> Result<Vec<usize>, Box<dyn std::error::Error>> {
   let progress_file_path = get_progress_file_path()?;
   
   // Check if the progress file exists first
@@ -351,12 +445,43 @@ pub fn load_highlights(
 }
 
 /// Export all highlights for a document as text
+/// 
+/// This function handles both local and server-side highlights.
+/// For server-side highlights, you should use the `export_highlights_async` function instead.
 pub fn export_highlights(
   document_hash: u64,
   lines: &[String],
   client: Option<Arc<HyggClient>>,
 ) -> Result<String, Box<dyn std::error::Error>> {
-  let highlights = load_highlights(document_hash, client)?;
+  if client.is_some() {
+    println!("Error: Cannot call export_highlights with client from a synchronous context");
+    println!("Either call this function in an async context or use export_highlights_async instead");
+    return Err("Cannot use server-side highlights from a synchronous context. Use export_highlights_async instead".into());
+  }
+  
+  // Handle local storage
+  println!("Using local storage for highlight export");
+  let highlights = load_highlights(document_hash, None)?;
+  format_highlights_result(highlights, lines)
+}
+
+/// Async version of export_highlights for server-side highlights
+pub async fn export_highlights_async(
+  document_hash: u64,
+  lines: &[String],
+  client: Option<Arc<HyggClient>>,
+) -> Result<String, Box<dyn std::error::Error>> {
+  let highlights = if client.is_some() {
+    load_highlights_async(document_hash, client).await?
+  } else {
+    load_highlights(document_hash, None)?
+  };
+  
+  format_highlights_result(highlights, lines)
+}
+
+/// Helper function to format highlights result
+fn format_highlights_result(highlights: Vec<usize>, lines: &[String]) -> Result<String, Box<dyn std::error::Error>> {
   let mut result = String::new();
   
   for &line_num in &highlights {
@@ -397,26 +522,64 @@ fn get_last_highlight_event(document_hash: u64) -> Result<Option<Event>, Box<dyn
 }
 
 /// Undo the last highlight action for a document
+/// 
+/// This function handles both local and server-side highlight management.
+/// For server-side highlights, you should call this in an async context
+/// or use the `undo_last_highlight_async` function instead.
 pub fn undo_last_highlight(
   document_hash: u64,
   file_path: &str,
   client: Option<Arc<HyggClient>>,
 ) -> Result<bool, Box<dyn std::error::Error>> {
-  // If we have a client, we'll need to use a different approach for server-side highlights
-  if let Some(client) = client {
-    // For server-side highlights, we use the client API
-    // Create a runtime for async operations
-    let rt = Runtime::new()?;
-    let result = rt.block_on(async {
-      println!("Undoing last highlight action via server API");
-      // Call the server-side API to undo the last highlight action
-      let was_undone = client.undo_last_highlight(&document_hash.to_string()).await?;
-      println!("Server returned was_undone: {}", was_undone);
-      Ok(was_undone)
-    })?;
-    
-    return Ok(result);
+  println!("undo_last_highlight called with document_hash={}", document_hash);
+  
+  // For server-side highlights, delegate to the async version
+  if client.is_some() {
+    println!("Error: Cannot call undo_last_highlight with client from a synchronous context");
+    println!("Either call this function in an async context or use undo_last_highlight_async instead");
+    return Err("Cannot use server-side highlights from a synchronous context. Use undo_last_highlight_async instead".into());
   }
+  
+  // For local storage fallback
+  println!("Using local storage for highlight management");
+  handle_local_undo_highlight(document_hash)
+}
+
+/// Async version of undo_last_highlight for server-side highlights
+pub async fn undo_last_highlight_async(
+  document_hash: u64,
+  file_path: &str,
+  client: Option<Arc<HyggClient>>,
+) -> Result<bool, Box<dyn std::error::Error>> {
+  println!("undo_last_highlight_async called with document_hash={}", document_hash);
+  
+  if let Some(client) = client {
+    println!("Using server-based highlight management through HyggClient");
+    
+    // Call the server-side API directly in an async context
+    println!("Undoing last highlight action via server API");
+    let hash_str = document_hash.to_string();
+    println!("Calling client.undo_last_highlight with hash={}", hash_str);
+    
+    match client.undo_last_highlight(&hash_str).await {
+      Ok(result) => {
+        println!("Server returned was_undone: {}", result);
+        Ok(result)
+      },
+      Err(e) => {
+        println!("Error in undo_last_highlight: {:?}", e);
+        Err(e.into())
+      }
+    }
+  } else {
+    // For local storage fallback
+    println!("Using local storage for highlight management");
+    handle_local_undo_highlight(document_hash)
+  }
+}
+
+/// Helper function to handle local undo highlight logic
+fn handle_local_undo_highlight(document_hash: u64) -> Result<bool, Box<dyn std::error::Error>> {
   
   // For local storage fallback, check if there was a previous highlight action
   if let Some(_) = get_last_highlight_event(document_hash)? {

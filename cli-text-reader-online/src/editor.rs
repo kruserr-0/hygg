@@ -1,4 +1,4 @@
-use crate::progress::undo_last_highlight;
+use crate::progress::{undo_last_highlight, undo_last_highlight_async, load_highlights_async};
 use crossterm::{
   cursor::{Hide, MoveTo, Show},
   event::{self, Event as CEvent, KeyCode},
@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use crate::config::load_config;
 use crate::progress::{generate_hash, load_progress, save_progress, 
-                      load_highlights, add_highlight, remove_highlight, 
-                      clear_highlights, export_highlights};
+                      add_highlight_async, remove_highlight_async,
+                      clear_highlights_async, export_highlights_async};
 use crate::server::HyggClient;
 use crate::tutorial::get_tutorial_text;
 
@@ -79,7 +79,40 @@ impl Editor {
             .unwrap_or((80, 24));
             
         // Try to load highlights
-        let highlights = load_highlights(document_hash, client.clone()).unwrap_or_default();
+        // Note: This is in a constructor, so we have to handle async differently
+        // by creating a temporary runtime just for initialization
+        let highlights = if client.is_some() {
+            // We need to handle async load_highlights_async specially during initialization
+            // since this is not an async context
+            println!("Loading highlights during Editor initialization");
+            if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                // We're in a Tokio runtime context, use it
+                println!("Using existing Tokio runtime for highlight loading");
+                match tokio::task::block_in_place(|| {
+                    rt.block_on(async {
+                        load_highlights_async(document_hash, client.clone()).await
+                    })
+                }) {
+                    Ok(h) => h,
+                    Err(e) => {
+                        println!("Error loading highlights: {}", e);
+                        Vec::new()
+                    }
+                }
+            } else {
+                println!("No Tokio runtime available for highlight loading");
+                Vec::new()
+            }
+        } else {
+            // For local highlights only, we can use the synchronous version
+            match crate::progress::load_highlights(document_hash, None) {
+                Ok(h) => h,
+                Err(e) => {
+                    println!("Error loading highlights: {}", e);
+                    Vec::new()
+                }
+            }
+        };
 
         Self {
             lines,
@@ -109,15 +142,15 @@ impl Editor {
         self.read_only = read_only;
     }
 
-    pub fn run_with_progress<F>(&mut self, callback: F) -> Result<(), Box<dyn std::error::Error>>
+    pub async fn run_with_progress<F>(&mut self, callback: F) -> Result<(), Box<dyn std::error::Error>>
     where
         F: Fn(usize) + Send + 'static,
     {
         self.progress_callback = Some(Box::new(callback));
-        self.run()
+        self.run().await
     }
 
-    pub fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let mut stdout = io::stdout();
         let config = load_config();
 
@@ -143,7 +176,7 @@ impl Editor {
             terminal::enable_raw_mode()?;
         }
 
-        self.main_loop(&mut stdout)?;
+        self.main_loop(&mut stdout).await?;
 
         self.cleanup(&mut stdout)?;
         Ok(())
@@ -241,7 +274,7 @@ impl Editor {
     Ok(())
   }
 
-    fn main_loop(
+    async fn main_loop(
         &mut self,
         stdout: &mut io::Stdout,
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -568,7 +601,7 @@ impl Editor {
                 self.editor_state.visual_end = None;
               }
               KeyCode::Enter => {
-                if self.execute_command(stdout)? {
+                if self.execute_command(stdout).await? {
                   return Ok(());
                 }
                 self.editor_state.mode = EditorMode::Normal;
@@ -601,7 +634,7 @@ impl Editor {
     Ok(())
   }
 
-  fn execute_command(
+  async fn execute_command(
     &mut self,
     stdout: &mut io::Stdout,
   ) -> Result<bool, Box<dyn std::error::Error>> {
@@ -630,7 +663,11 @@ impl Editor {
               // Add to the local highlights list
               self.highlights.push(line_num);
               // Save to server database or local storage
-              add_highlight(self.document_hash, line_num, &self.file_path, self.client.clone())?;
+              if self.client.is_some() {
+                add_highlight_async(self.document_hash, line_num, &self.file_path, self.client.clone()).await?
+              } else {
+                crate::progress::add_highlight(self.document_hash, line_num, &self.file_path, None)?
+              }
             }
           }
           
@@ -640,7 +677,11 @@ impl Editor {
           let current_line = self.offset + self.height / 2;
           if !self.highlights.contains(&current_line) {
             self.highlights.push(current_line);
-            add_highlight(self.document_hash, current_line, &self.file_path, self.client.clone())?;
+            if self.client.is_some() {
+              add_highlight_async(self.document_hash, current_line, &self.file_path, self.client.clone()).await?
+            } else {
+              crate::progress::add_highlight(self.document_hash, current_line, &self.file_path, None)?
+            }
           }
         }
         
@@ -661,7 +702,11 @@ impl Editor {
               // Remove from local highlights
               self.highlights.retain(|&l| l != line_num);
               // Save to server database or local storage
-              remove_highlight(self.document_hash, line_num, &self.file_path, self.client.clone())?;
+              if self.client.is_some() {
+                remove_highlight_async(self.document_hash, line_num, &self.file_path, self.client.clone()).await?
+              } else {
+                crate::progress::remove_highlight(self.document_hash, line_num, &self.file_path, None)?
+              }
             }
           }
         } else {
@@ -669,7 +714,11 @@ impl Editor {
           let current_line = self.offset + self.height / 2;
           if self.highlights.contains(&current_line) {
             self.highlights.retain(|&l| l != current_line);
-            remove_highlight(self.document_hash, current_line, &self.file_path, self.client.clone())?;
+            if self.client.is_some() {
+              remove_highlight_async(self.document_hash, current_line, &self.file_path, self.client.clone()).await?
+            } else {
+              crate::progress::remove_highlight(self.document_hash, current_line, &self.file_path, None)?
+            }
           }
         }
         
@@ -682,7 +731,11 @@ impl Editor {
       "clear-hl" => {
         // Clear all highlights
         self.highlights.clear();
-        clear_highlights(self.document_hash, self.client.clone())?;
+        if self.client.is_some() {
+          clear_highlights_async(self.document_hash, self.client.clone()).await?
+        } else {
+          crate::progress::clear_highlights(self.document_hash, None)?
+        }
         
         self.editor_state.mode = EditorMode::Normal;
         self.editor_state.visual_start = None;
@@ -692,7 +745,11 @@ impl Editor {
       }
       "export-hl" => {
         // Export all highlights to a file
-        let highlights_text = export_highlights(self.document_hash, &self.lines, self.client.clone())?;
+        let highlights_text = if self.client.is_some() {
+          export_highlights_async(self.document_hash, &self.lines, self.client.clone()).await?
+        } else {
+          crate::progress::export_highlights(self.document_hash, &self.lines, None)?
+        };
         
         // Create highlights directory if it doesn't exist
         let mut highlights_dir = dirs::home_dir().unwrap_or_default();
@@ -718,10 +775,24 @@ impl Editor {
       }
       "hlu" => {
         // Undo the last highlight action
-        match undo_last_highlight(self.document_hash, &self.file_path, self.client.clone())? {
+        let result = if self.client.is_some() {
+          // Use the async version for server-side highlights
+          println!("Using async version for server-side highlights");
+          undo_last_highlight_async(self.document_hash, &self.file_path, self.client.clone()).await?
+        } else {
+          // Use the synchronous version for local highlights
+          println!("Using sync version for local highlights");
+          undo_last_highlight(self.document_hash, &self.file_path, None)?
+        };
+        
+        match result {
           true => {
             // Reload highlights after the undo
-            self.highlights = load_highlights(self.document_hash, self.client.clone())?;
+            if self.client.is_some() {
+              self.highlights = load_highlights_async(self.document_hash, self.client.clone()).await?;
+            } else {
+              self.highlights = crate::progress::load_highlights(self.document_hash, None)?;
+            }
             
             // Show confirmation message
             execute!(stdout, MoveTo(0, (self.height - 2) as u16), SetForegroundColor(Color::Green))?;
