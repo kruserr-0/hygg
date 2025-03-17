@@ -1,13 +1,18 @@
 mod config;
-mod editor;
-mod progress;
+mod editor_compat;
+mod progress_compat;
 mod tutorial;
 mod server;
 
 #[cfg(test)]
 mod tests;
 
-use editor::Editor;
+// Use new modular structure
+pub mod editor;
+pub mod progress;
+
+// Use compatibility layer for existing code
+use editor_compat::Editor;
 use server::{HyggClient, ReadingProgress};
 use uuid::Uuid;
 use chrono::Utc;
