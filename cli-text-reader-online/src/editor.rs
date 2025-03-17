@@ -778,11 +778,11 @@ impl Editor {
         let result = if self.client.is_some() {
           // Use the async version for server-side highlights
           println!("Using async version for server-side highlights");
-          undo_last_highlight_async(self.document_hash, &self.file_path, self.client.clone()).await?
+          undo_last_highlight_async(self.document_hash, self.client.clone()).await?
         } else {
           // Use the synchronous version for local highlights
           println!("Using sync version for local highlights");
-          undo_last_highlight(self.document_hash, &self.file_path, None)?
+          undo_last_highlight(self.document_hash, None)?
         };
         
         match result {

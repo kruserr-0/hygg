@@ -4,6 +4,9 @@ mod progress;
 mod tutorial;
 mod server;
 
+#[cfg(test)]
+mod tests;
+
 use editor::Editor;
 use server::{HyggClient, ReadingProgress};
 use uuid::Uuid;

@@ -125,7 +125,7 @@ pub fn load_progress(
 pub fn add_highlight(
   document_hash: u64,
   line_number: usize,
-  _file_path: &str,
+  file_path: &str,
   client: Option<Arc<HyggClient>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
   // For server-side highlights, notify the user to use the async version
@@ -143,7 +143,7 @@ pub fn add_highlight(
 pub async fn add_highlight_async(
   document_hash: u64,
   line_number: usize,
-  _file_path: &str,
+  _file_path: file_path: &str,str,
   client: Option<Arc<HyggClient>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
   println!("add_highlight_async called for document_hash={}, line={}", document_hash, line_number);
@@ -171,7 +171,7 @@ pub async fn add_highlight_async(
     }
     
     // Try to add the highlight
-    match client.add_highlight(_file_path, &document_hash.to_string(), line_number).await {
+    match client.add_highlight(file_path, &document_hash.to_string(), line_number).await {
       Ok(_) => {
         log::info!("Successfully added highlight for line {} in document {}", line_number, document_hash);
         return Ok(());
@@ -229,7 +229,7 @@ fn handle_local_add_highlight(document_hash: u64, line_number: usize) -> Result<
 pub fn remove_highlight(
   document_hash: u64,
   line_number: usize,
-  _file_path: &str,
+  _file_path: file_path: &str,str,
   client: Option<Arc<HyggClient>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
   // For server-side highlights, notify the user to use the async version
@@ -247,7 +247,7 @@ pub fn remove_highlight(
 pub async fn remove_highlight_async(
   document_hash: u64,
   line_number: usize,
-  _file_path: &str,
+  _file_path: file_path: &str,str,
   client: Option<Arc<HyggClient>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
   println!("remove_highlight_async called for document_hash={}, line={}", document_hash, line_number);
@@ -276,7 +276,7 @@ pub async fn remove_highlight_async(
     }
     
     // Try to remove the highlight
-    match client.remove_highlight(_file_path, &document_hash.to_string(), line_number).await {
+    match client.remove_highlight(file_path, &document_hash.to_string(), line_number).await {
       Ok(_) => {
         log::info!("Successfully removed highlight for line {} in document {}", line_number, document_hash);
         return Ok(());
