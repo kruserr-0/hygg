@@ -7,11 +7,13 @@ use crossterm::{
   terminal::{self, Clear, ClearType},
 };
 use std::io::{self, IsTerminal, Write};
+use std::sync::Arc;
 
 use crate::config::load_config;
 use crate::progress::{generate_hash, load_progress, save_progress, 
                       load_highlights, add_highlight, remove_highlight, 
                       clear_highlights, export_highlights};
+use crate::server::HyggClient;
 use crate::tutorial::get_tutorial_text;
 
 #[derive(PartialEq)]
@@ -64,10 +66,12 @@ pub struct Editor {
     show_progress: bool,
     progress_callback: Option<Box<dyn Fn(usize) + Send>>,
     read_only: bool,
+    client: Option<Arc<HyggClient>>,
+    file_path: String,
 }
 
 impl Editor {
-    pub fn new(lines: Vec<String>, col: usize) -> Self {
+    pub fn new(lines: Vec<String>, col: usize, file_path: String, client: Option<Arc<HyggClient>>) -> Self {
         let document_hash = generate_hash(&lines);
         let total_lines = lines.len();
         let (width, height) = terminal::size()
@@ -75,7 +79,7 @@ impl Editor {
             .unwrap_or((80, 24));
             
         // Try to load highlights
-        let highlights = load_highlights(document_hash).unwrap_or_default();
+        let highlights = load_highlights(document_hash, client.clone()).unwrap_or_default();
 
         Self {
             lines,
@@ -92,6 +96,8 @@ impl Editor {
             progress_callback: None,
             read_only: false,
             highlights,
+            client,
+            file_path,
         }
   }
 
@@ -623,8 +629,8 @@ impl Editor {
             if !self.highlights.contains(&line_num) {
               // Add to the local highlights list
               self.highlights.push(line_num);
-              // Save to event sourcing database
-              add_highlight(self.document_hash, line_num)?;
+              // Save to server database or local storage
+              add_highlight(self.document_hash, line_num, &self.file_path, self.client.clone())?;
             }
           }
           
@@ -634,7 +640,7 @@ impl Editor {
           let current_line = self.offset + self.height / 2;
           if !self.highlights.contains(&current_line) {
             self.highlights.push(current_line);
-            add_highlight(self.document_hash, current_line)?;
+            add_highlight(self.document_hash, current_line, &self.file_path, self.client.clone())?;
           }
         }
         
@@ -654,8 +660,8 @@ impl Editor {
             if self.highlights.contains(&line_num) {
               // Remove from local highlights
               self.highlights.retain(|&l| l != line_num);
-              // Save to event sourcing database
-              remove_highlight(self.document_hash, line_num)?;
+              // Save to server database or local storage
+              remove_highlight(self.document_hash, line_num, &self.file_path, self.client.clone())?;
             }
           }
         } else {
@@ -663,7 +669,7 @@ impl Editor {
           let current_line = self.offset + self.height / 2;
           if self.highlights.contains(&current_line) {
             self.highlights.retain(|&l| l != current_line);
-            remove_highlight(self.document_hash, current_line)?;
+            remove_highlight(self.document_hash, current_line, &self.file_path, self.client.clone())?;
           }
         }
         
@@ -676,7 +682,7 @@ impl Editor {
       "clear-hl" => {
         // Clear all highlights
         self.highlights.clear();
-        clear_highlights(self.document_hash)?;
+        clear_highlights(self.document_hash, self.client.clone())?;
         
         self.editor_state.mode = EditorMode::Normal;
         self.editor_state.visual_start = None;
@@ -686,7 +692,7 @@ impl Editor {
       }
       "export-hl" => {
         // Export all highlights to a file
-        let highlights_text = export_highlights(self.document_hash, &self.lines)?;
+        let highlights_text = export_highlights(self.document_hash, &self.lines, self.client.clone())?;
         
         // Create highlights directory if it doesn't exist
         let mut highlights_dir = dirs::home_dir().unwrap_or_default();
@@ -712,10 +718,10 @@ impl Editor {
       }
       "hlu" => {
         // Undo the last highlight action
-        match undo_last_highlight(self.document_hash)? {
+        match undo_last_highlight(self.document_hash, &self.file_path, self.client.clone())? {
           true => {
             // Reload highlights after the undo
-            self.highlights = load_highlights(self.document_hash)?;
+            self.highlights = load_highlights(self.document_hash, self.client.clone())?;
             
             // Show confirmation message
             execute!(stdout, MoveTo(0, (self.height - 2) as u16), SetForegroundColor(Color::Green))?;

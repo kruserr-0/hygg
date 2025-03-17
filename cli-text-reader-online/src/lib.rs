@@ -11,6 +11,7 @@ use chrono::Utc;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
+use std::sync::Arc;
 use tokio::fs::read_to_string;
 
 /// Upload a local file to the server for syncing
@@ -122,7 +123,7 @@ pub async fn run_cli_text_reader(
     };
     
     // Create editor with progress tracking
-    let mut editor = Editor::new(lines, col);
+    let mut editor = Editor::new(lines, col, progress.file_path.clone(), Some(Arc::new(client.clone())));
     editor.set_position(progress.position);
     
     let result = if read_only_mode {

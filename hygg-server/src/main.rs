@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use axum::{
-    routing::{get, post},
+    routing::{get, post, delete},
     Router, Json, extract::{State, Path},
     response::IntoResponse,
     http::StatusCode,
@@ -25,6 +25,16 @@ struct ReadingProgress {
     lock_expiry: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+struct Highlight {
+    id: Option<Uuid>,              // Optional for new highlights
+    file_path: String,
+    document_hash: String,
+    line_number: i64,             // Using i64 instead of usize for SQLx compatibility
+    user_id: String,
+    created_at: Option<DateTime<Utc>>, // Optional for new highlights
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct ProgressEvent {
     id: Uuid,
@@ -33,6 +43,14 @@ struct ProgressEvent {
     position: usize,
     user_id: String,
     timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct HighlightRequest {
+    file_path: String,
+    document_hash: String,
+    line_number: i64,  // Using i64 instead of usize for SQLx compatibility
+    user_id: String,
 }
 
 #[derive(Clone)]
@@ -76,6 +94,20 @@ async fn init_db(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             user_id TEXT NOT NULL,
             timestamp TIMESTAMP NOT NULL,
             FOREIGN KEY(progress_id) REFERENCES reading_progress(id)
+        )"
+    ).execute(pool).await?;
+    
+    // Create highlights table if it doesn't exist
+    println!("Creating highlights table if needed...");
+    sqlx::query("
+        CREATE TABLE IF NOT EXISTS highlights (
+            id TEXT PRIMARY KEY,
+            file_path TEXT NOT NULL,
+            document_hash TEXT NOT NULL,
+            line_number INTEGER NOT NULL,
+            user_id TEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL,
+            UNIQUE(document_hash, line_number, user_id)
         )"
     ).execute(pool).await?;
     
@@ -489,6 +521,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/progress/release", post(release_lock))
         .route("/progress/update", post(update_progress))
         .route("/progress/:id", get(get_progress))
+        // Highlight management endpoints
+        .route("/highlights/:document_hash/:user_id", get(get_highlights))
+        .route("/highlights/add", post(add_highlight))
+        .route("/highlights/remove", post(remove_highlight))
+        .route("/highlights/clear/:document_hash/:user_id", delete(clear_highlights))
+        .route("/highlights/undo/:document_hash/:user_id", delete(undo_last_highlight))
         .layer(CorsLayer::permissive())
         .with_state(app_state);
     
@@ -497,4 +535,190 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     axum::serve(listener, app).await?;
     
     Ok(())
+}
+
+// Highlight management API endpoints
+
+/// Get all highlights for a document and user
+async fn get_highlights(
+    State(state): State<AppState>,
+    Path((document_hash, user_id)): Path<(String, String)>,
+) -> Result<Json<Vec<Highlight>>, (StatusCode, String)> {
+    println!("HIGHLIGHTS: Getting highlights for document_hash {} and user {}", document_hash, user_id);
+    
+    let highlights = sqlx::query_as::<_, Highlight>(r"
+        SELECT id, file_path, document_hash, line_number, user_id, created_at 
+        FROM highlights 
+        WHERE document_hash = ? AND user_id = ?
+    ")
+    .bind(&document_hash)
+    .bind(&user_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| {
+        eprintln!("Database error fetching highlights: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e))
+    })?;
+    
+    println!("HIGHLIGHTS: Found {} highlights", highlights.len());
+    Ok(Json(highlights))
+}
+
+/// Add a highlight
+async fn add_highlight(
+    State(state): State<AppState>,
+    Json(highlight_req): Json<HighlightRequest>,
+) -> Result<Json<Highlight>, (StatusCode, String)> {
+    println!("HIGHLIGHTS: Adding highlight for line {} in document {} for user {}", 
+             highlight_req.line_number, highlight_req.document_hash, highlight_req.user_id);
+    
+    let id = Uuid::new_v4();
+    let now = Utc::now();
+    
+    // First check if this highlight already exists
+    let existing = sqlx::query(r"
+        SELECT id FROM highlights 
+        WHERE document_hash = ? AND line_number = ? AND user_id = ?
+    ")
+    .bind(&highlight_req.document_hash)
+    .bind(highlight_req.line_number)
+    .bind(&highlight_req.user_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| {
+        eprintln!("Database error checking for existing highlight: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e))
+    })?;
+    
+    if existing.is_some() {
+        return Err((StatusCode::CONFLICT, "Highlight already exists".to_string()));
+    }
+    
+    sqlx::query(r"
+        INSERT INTO highlights (id, file_path, document_hash, line_number, user_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ")
+    .bind(id.to_string())
+    .bind(&highlight_req.file_path)
+    .bind(&highlight_req.document_hash)
+    .bind(highlight_req.line_number)
+    .bind(&highlight_req.user_id)
+    .bind(now)
+    .execute(&state.db)
+    .await
+    .map_err(|e| {
+        eprintln!("Database error adding highlight: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e))
+    })?;
+    
+    let new_highlight = Highlight {
+        id: Some(id),
+        file_path: highlight_req.file_path,
+        document_hash: highlight_req.document_hash,
+        line_number: highlight_req.line_number,
+        user_id: highlight_req.user_id,
+        created_at: Some(now),
+    };
+    
+    println!("HIGHLIGHTS: Successfully added highlight");
+    Ok(Json(new_highlight))
+}
+
+/// Remove a highlight
+async fn remove_highlight(
+    State(state): State<AppState>,
+    Json(highlight_req): Json<HighlightRequest>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    println!("HIGHLIGHTS: Removing highlight for line {} in document {} for user {}", 
+             highlight_req.line_number, highlight_req.document_hash, highlight_req.user_id);
+    
+    let result = sqlx::query(r"
+        DELETE FROM highlights 
+        WHERE document_hash = ? AND line_number = ? AND user_id = ?
+    ")
+    .bind(&highlight_req.document_hash)
+    .bind(highlight_req.line_number)
+    .bind(&highlight_req.user_id)
+    .execute(&state.db)
+    .await
+    .map_err(|e| {
+        eprintln!("Database error removing highlight: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e))
+    })?;
+    
+    if result.rows_affected() == 0 {
+        println!("HIGHLIGHTS: No highlights found to remove");
+        return Err((StatusCode::NOT_FOUND, "Highlight not found".to_string()));
+    }
+    
+    println!("HIGHLIGHTS: Successfully removed highlight");
+    Ok((StatusCode::OK, "Highlight removed".to_string()))
+}
+
+/// Clear all highlights for a document and user
+async fn clear_highlights(
+    State(state): State<AppState>,
+    Path((document_hash, user_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    println!("HIGHLIGHTS: Clearing all highlights for document {} and user {}", document_hash, user_id);
+    
+    let result = sqlx::query(r"
+        DELETE FROM highlights 
+        WHERE document_hash = ? AND user_id = ?
+    ")
+    .bind(&document_hash)
+    .bind(&user_id)
+    .execute(&state.db)
+    .await
+    .map_err(|e| {
+        eprintln!("Database error clearing highlights: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e))
+    })?;
+    
+    println!("HIGHLIGHTS: Cleared {} highlights", result.rows_affected());
+    Ok((StatusCode::OK, format!("Cleared {} highlights", result.rows_affected())))
+}
+
+/// Undo the last highlight action for a document and user
+async fn undo_last_highlight(
+    State(state): State<AppState>,
+    Path((document_hash, user_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    println!("HIGHLIGHTS: Undoing last highlight for document {} and user {}", document_hash, user_id);
+    
+    // Find the most recent highlight for this document and user
+    let maybe_highlight = sqlx::query_as::<_, Highlight>(r"
+        SELECT * FROM highlights 
+        WHERE document_hash = ? AND user_id = ? 
+        ORDER BY created_at DESC LIMIT 1
+    ")
+    .bind(&document_hash)
+    .bind(&user_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| {
+        eprintln!("Database error finding most recent highlight: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e))
+    })?;
+    
+    if let Some(highlight) = maybe_highlight {
+        // Delete this highlight
+        let _result = sqlx::query(r"
+            DELETE FROM highlights 
+            WHERE id = ?
+        ")
+        .bind(highlight.id)
+        .execute(&state.db)
+        .await
+        .map_err(|e| {
+            eprintln!("Database error removing highlight: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e))
+        })?;
+        
+        println!("HIGHLIGHTS: Undid highlight at line {} for document {}", highlight.line_number, document_hash);
+        Ok((StatusCode::OK, format!("Undid highlight at line {}", highlight.line_number)))
+    } else {
+        println!("HIGHLIGHTS: No highlights found to undo for document {}", document_hash);
+        Ok((StatusCode::NO_CONTENT, String::from("No highlights to undo")))
+    }
 }
